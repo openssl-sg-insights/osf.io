@@ -652,7 +652,7 @@ class NodeSerializer(TaxonomizableSerializerMixin, JSONAPISerializer):
         ).filter(is_child=True)
         auth = get_user_auth(self.context['request'])
         user_id = getattr(auth.user, 'id', None)
-        user = OSFUser.load(user_id) if user_id else None
+        user = OSFUser.objects.get(id=user_id) if user_id else None
         return child_nodes.can_view(user=user, private_link=auth.private_key).count()
 #        with connection.cursor() as cursor:
 #            cursor.execute(
