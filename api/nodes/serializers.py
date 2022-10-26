@@ -641,18 +641,18 @@ class NodeSerializer(TaxonomizableSerializerMixin, JSONAPISerializer):
         Returns the count of a node's direct children that the user has permission to view.
         Implict admin and group membership are factored in when determining perms.
         """
-        auth = get_user_auth(self.context['request'])
-        user_id = getattr(auth.user, 'id', None)
-        if user_id:
-            user = OSFUser.load(user_id)
-        return AbstractNode.objects.filter(deleted__isnull=True).annotate(
+        child_nodes = AbstractNode.objects.filter(deleted__isnull=True).annotate(
             is_child=Exists(
                 NodeRelation.objects.filter(
                     parent=obj.id,
                     child=OuterRef('id'),
                 ),
             ),
-        ).filter(is_child=True).can_view(user=user, private_link=auth.private_key).count()
+        ).filter(is_child=True)
+        auth = get_user_auth(self.context['request'])
+        user_id = getattr(auth.user, 'id', None)
+        user = OSFUser.load(user_id) if user_id else None
+        return child_nodes.can_view(user=user, private_link=auth.private_key).count()
 #        with connection.cursor() as cursor:
 #            cursor.execute(
 #                """
