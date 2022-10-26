@@ -644,8 +644,9 @@ class NodeSerializer(TaxonomizableSerializerMixin, JSONAPISerializer):
         child_nodes = AbstractNode.objects.filter(deleted__isnull=True).annotate(
             is_child=Exists(
                 NodeRelation.objects.filter(
-                    parent=obj.id,
+                    is_node_link=False,
                     child=OuterRef('id'),
+                    parent=obj.id,
                 ),
             ),
         ).filter(is_child=True)
