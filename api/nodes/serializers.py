@@ -1,4 +1,5 @@
-from django.db import connection
+#from django.db import connection
+from django.db.models import Exists, OuterRef
 from distutils.version import StrictVersion
 
 from api.base.exceptions import (
@@ -38,7 +39,7 @@ from osf.models import (
     Comment, DraftRegistration, ExternalAccount, Institution,
     RegistrationSchema, AbstractNode, PrivateLink, Preprint,
     RegistrationProvider, OSFGroup, NodeLicense, DraftNode,
-    Registration, Node,
+    Registration, Node, NodeRelation, OSFUser,
 )
 from website.project import new_private_link
 from website.project.model import NodeUpdateError
@@ -360,7 +361,7 @@ class NodeSerializer(TaxonomizableSerializerMixin, JSONAPISerializer):
     children = RelationshipField(
         related_view='nodes:node-children',
         related_view_kwargs={'node_id': '<_id>'},
-        # related_meta={'count': 'get_node_count'},
+        related_meta={'count': 'get_node_count'},
     )
 
     comments = RelationshipField(
@@ -642,56 +643,66 @@ class NodeSerializer(TaxonomizableSerializerMixin, JSONAPISerializer):
         """
         auth = get_user_auth(self.context['request'])
         user_id = getattr(auth.user, 'id', None)
-        with connection.cursor() as cursor:
-            cursor.execute(
-                """
-                WITH RECURSIVE parents AS (
-                  SELECT parent_id, child_id
-                  FROM osf_noderelation
-                  WHERE child_id = %s AND is_node_link IS FALSE
-                UNION ALL
-                  SELECT osf_noderelation.parent_id, parents.parent_id AS child_id
-                  FROM parents JOIN osf_noderelation ON parents.PARENT_ID = osf_noderelation.child_id
-                  WHERE osf_noderelation.is_node_link IS FALSE
-                ), has_admin AS (SELECT EXISTS(
-                    SELECT P.codename
-                    FROM auth_permission AS P
-                    INNER JOIN osf_nodegroupobjectpermission AS G ON (P.id = G.permission_id)
-                    INNER JOIN osf_osfuser_groups AS UG ON (G.group_id = UG.group_id)
-                    WHERE (P.codename = 'admin_node'
-                           AND (G.content_object_id IN (
-                                SELECT parent_id
-                                FROM parents
-                           ) OR G.content_object_id = %s)
-                           AND UG.osfuser_id = %s)
-                ))
-                SELECT COUNT(DISTINCT child_id)
-                FROM
-                  osf_noderelation
-                JOIN osf_abstractnode ON osf_noderelation.child_id = osf_abstractnode.id
-                LEFT JOIN osf_privatelink_nodes ON osf_abstractnode.id = osf_privatelink_nodes.abstractnode_id
-                LEFT JOIN osf_privatelink ON osf_privatelink_nodes.privatelink_id = osf_privatelink.id
-                WHERE parent_id = %s AND is_node_link IS FALSE
-                AND osf_abstractnode.is_deleted IS FALSE
-                AND (
-                  osf_abstractnode.is_public
-                  OR (SELECT exists from has_admin) = TRUE
-                  OR (SELECT EXISTS(
-                      SELECT P.codename
-                      FROM auth_permission AS P
-                      INNER JOIN osf_nodegroupobjectpermission AS G ON (P.id = G.permission_id)
-                      INNER JOIN osf_osfuser_groups AS UG ON (G.group_id = UG.group_id)
-                      WHERE (P.codename = 'read_node'
-                             AND G.content_object_id = osf_abstractnode.id
-                             AND UG.osfuser_id = %s)
-                      )
-                  )
-                  OR (osf_privatelink.key = %s AND osf_privatelink.is_deleted = FALSE)
-                );
-            """, [obj.id, obj.id, user_id, obj.id, user_id, auth.private_key],
-            )
-
-            return int(cursor.fetchone()[0])
+        if user_id:
+            user = OSFUser.load(user_id)
+        return AbstractNode.objects.filter(deleted__isnull=True).annotate(
+            is_child=Exists(
+                NodeRelation.objects.filter(
+                    parent=obj.id,
+                    child=OuterRef('id'),
+                ),
+            ),
+        ).filter(is_child=True).can_view(user=user, private_link=auth.private_key).count()
+#        with connection.cursor() as cursor:
+#            cursor.execute(
+#                """
+#                WITH RECURSIVE parents AS (
+#                  SELECT parent_id, child_id
+#                  FROM osf_noderelation
+#                  WHERE child_id = %s AND is_node_link IS FALSE
+#                UNION ALL
+#                  SELECT osf_noderelation.parent_id, parents.parent_id AS child_id
+#                  FROM parents JOIN osf_noderelation ON parents.PARENT_ID = osf_noderelation.child_id
+#                  WHERE osf_noderelation.is_node_link IS FALSE
+#                ), has_admin AS (SELECT EXISTS(
+#                    SELECT P.codename
+#                    FROM auth_permission AS P
+#                    INNER JOIN osf_nodegroupobjectpermission AS G ON (P.id = G.permission_id)
+#                    INNER JOIN osf_osfuser_groups AS UG ON (G.group_id = UG.group_id)
+#                    WHERE (P.codename = 'admin_node'
+#                           AND (G.content_object_id IN (
+#                                SELECT parent_id
+#                                FROM parents
+#                           ) OR G.content_object_id = %s)
+#                           AND UG.osfuser_id = %s)
+#                ))
+#                SELECT COUNT(DISTINCT child_id)
+#                FROM
+#                  osf_noderelation
+#                JOIN osf_abstractnode ON osf_noderelation.child_id = osf_abstractnode.id
+#                LEFT JOIN osf_privatelink_nodes ON osf_abstractnode.id = osf_privatelink_nodes.abstractnode_id
+#                LEFT JOIN osf_privatelink ON osf_privatelink_nodes.privatelink_id = osf_privatelink.id
+#                WHERE parent_id = %s AND is_node_link IS FALSE
+#                AND osf_abstractnode.is_deleted IS FALSE
+#                AND (
+#                  osf_abstractnode.is_public
+#                  OR (SELECT exists from has_admin) = TRUE
+#                  OR (SELECT EXISTS(
+#                      SELECT P.codename
+#                      FROM auth_permission AS P
+#                      INNER JOIN osf_nodegroupobjectpermission AS G ON (P.id = G.permission_id)
+#                      INNER JOIN osf_osfuser_groups AS UG ON (G.group_id = UG.group_id)
+#                      WHERE (P.codename = 'read_node'
+#                             AND G.content_object_id = osf_abstractnode.id
+#                             AND UG.osfuser_id = %s)
+#                      )
+#                  )
+#                  OR (osf_privatelink.key = %s AND osf_privatelink.is_deleted = FALSE)
+#                );
+#            """, [obj.id, obj.id, user_id, obj.id, user_id, auth.private_key],
+#            )
+#
+#            return int(cursor.fetchone()[0])
 
     def get_contrib_count(self, obj):
         return len(obj.contributors)
